@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: SharedLib Lambda Layer Version for calendarsnack-shared-library
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: SharedLib
+    Description: calendarsnack-shared-library shared lib lambda layer
+    Author: 31events
+    # SpdxLicenseId: N/A
+    # LicenseUrl: LICENSE.txt
+    ReadmeUrl: ../README.md
+    # SemanticVersion is ignored by the SAM publisher CodeBuild
+    # instead version comes from the Git tag that triggers the CodeBuild.
+    SemanticVersion: 0.0.1
+
+Resources:
+  SharedLib:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      Description: Shared library of methods for SAM App.
+      ContentUri: ../src
+      CompatibleRuntimes:
+        - python3.8
+        - python3.9
+    Metadata:
+      BuildMethod: makefile
+
+Outputs:
+  LayerVersionArn:
+    Description: SharedLib Layer Version Arn
+    Value: !Ref SharedLib

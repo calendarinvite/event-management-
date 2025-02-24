@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: cancel_event
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: cancel-event
+    Description: API application for the cancel_event SAM app.
+    Author: 31events
+    # SpdxLicenseId: N/A
+    # LicenseUrl: LICENSE.txt
+    ReadmeUrl: ../README.md
+    # SemanticVersion is ignored by the SAM publisher CodeBuild
+    # instead version comes from the Git tag that triggers the CodeBuild.
+    SemanticVersion: 0.0.1
+
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W3002 # Because we're using Lambda Layers
+
+Parameters:
+  ############
+  # Required #
+  ############
+  DynamoDbTableName:
+    Type: String
+    Description: Name of DynamoDb table to write to/read from.
+
+  EventCancelCompleteSnsTopicName:
+    Type: String
+    Description: Name of the Event Cancel Completion SNS Topic to write to.
+
+  EventCancelSqsQueueName:
+    Type: String
+    Description: Name of the Event Cancel SQS Queue to read from.
+
+  LayerVersionArn:
+    Type: String
+    Description: SharedLib Lambda Layer version ARN.
+
+  ############
+  # Optional #
+  ############
+  LogLevel:
+    Type: String
+    Description: Log level for lambda.
+    Default: WARNING
+
+  LogRetentionDays:
+    Type: String
+    Description: Number of days to retin logs before expiring them.
+    AllowedValues:
+      - "-1"
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+    Default: 180
+
+Conditions:
+  LogRetentionIsSet: !Not [!Equals [!Ref LogRetentionDays, "-1"]]
+
+Resources:
+  CancelEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/functions/cancel_event/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      Role: !GetAtt CancelEventFunctionRole.Arn
+      Timeout: 10 # TODO: Reduce this to 3s when this function can consistently achieve it.
+      MemorySize: 1024
+      Layers:
+        - !Ref LayerVersionArn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            BatchSize: 1
+            Enabled: True
+            Queue: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${EventCancelSqsQueueName}
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          DYNAMODB_TABLE: !Ref DynamoDbTableName
+          EVENT_CANCELLED: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${EventCancelCompleteSnsTopicName}
+          REGION: !Ref AWS::Region
+          SQS_URL: !Sub https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${EventCancelSqsQueueName}
+
+  CancelEventFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatch
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Sid: SqsWrite
+                Effect: Allow
+                Action:
+                  - "sqs:DeleteMessage"
+                  - "sqs:ReceiveMessage"
+                  - "sqs:GetQueueAttributes"
+                Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${EventCancelSqsQueueName}
+              - Sid: SnsWrite
+                Effect: Allow
+                Action:
+                  - "sns:Publish"
+                  - "sns:Subscribe"
+                Resource: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${EventCancelCompleteSnsTopicName}
+              - Sid: DynamoDbWrite
+                Effect: Allow
+                Action:
+                  - "dynamodb:ConditionCheckItem"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:UpdateItem"
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}
+              - Sid: DynamoDbRead
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}/index/*
+
+  CancelEventLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CancelEventFunction}"
+      RetentionInDays: !If
+        - LogRetentionIsSet
+        - !Ref LogRetentionDays
+        - !Ref AWS::NoValue
+
+Outputs:
+  #######################
+  # CancelEventFunction #
+  #######################
+
+  CancelEventFunction:
+    Description: "CancelEvent Lambda Function ARN"
+    Value: !GetAtt CancelEventFunction.Arn
+
+  CancelEventFunctionRole:
+    Description: "IAM Role for the CancelEvent function"
+    Value: !GetAtt CancelEventFunctionRole.Arn
+
+  CancelEventLogGroup:
+    Description: "Log Group for the CancelEvent function."
+    Value: !Ref CancelEventLogGroup

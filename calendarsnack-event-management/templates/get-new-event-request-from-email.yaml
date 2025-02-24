@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: get_new_event_request_from_email
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: get-new-event-request-from-email
+    Description: API application for the get_new_event_request_from_email SAM app.
+    Author: 31events
+    # SpdxLicenseId: N/A
+    # LicenseUrl: LICENSE.txt
+    ReadmeUrl: ../README.md
+    # SemanticVersion is ignored by the SAM publisher CodeBuild
+    # instead version comes from the Git tag that triggers the CodeBuild.
+    SemanticVersion: 0.0.1
+
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W3002 # Because we're using Lambda Layers
+
+Parameters:
+  ############
+  # Required #
+  ############
+  S3BucketName:
+    Type: String
+    Description: S3 Bucket where incoming logs are stored.
+
+  S3Prefix:
+    Type: String
+    Description: Prefix in S3 Bucket where incoming logs are stored.
+
+  LayerVersionArn:
+    Type: String
+    Description: SharedLib Lambda Layer version ARN.
+
+  GetNewEventRequestFromEmailQueueName:
+    Type: String
+    Description: Name of Get New Event Request From Email Queue
+
+  EventCancelledTopicName:
+    Type: String
+    Description: Name of Event Cancelled Topic
+
+  EventUpdatedTopicName:
+    Type: String
+    Description: Name of Event Updated Topic
+
+  FailedEventCreateTopicName:
+    Type: String
+    Description: Name of Failed Event Create Topic
+
+  # InvalidWinmailRequestTopicName:
+  #   Type: String
+  #   Description: Name of Invalid Winmail Request Topic
+
+  NewEventRequestTopicName:
+    Type: String
+    Description: Name of New Event Request Topic
+
+  ############
+  # Optional #
+  ############
+  LogLevel:
+    Type: String
+    Description: Log level for lambda.
+    Default: WARNING
+
+  LogRetentionDays:
+    Type: String
+    Description: Number of days to retin logs before expiring them.
+    AllowedValues:
+      - "-1"
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+    Default: 180
+
+Conditions:
+  LogRetentionIsSet: !Not [!Equals [!Ref LogRetentionDays, "-1"]]
+
+Resources:
+  GetNewEventRequestFromEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/functions/get_new_event_request_from_email/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      Role: !GetAtt GetNewEventRequestFromEmailFunctionRole.Arn
+      Timeout: 10 # TODO: Reduce this to 3s when this function can consistently achieve it.
+      MemorySize: 1024
+      Layers:
+        - !Ref LayerVersionArn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            BatchSize: 1
+            Enabled: True
+            Queue: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${GetNewEventRequestFromEmailQueueName}
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          REGION: !Ref AWS::Region
+          EVENT_CANCELLATION: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${EventCancelledTopicName}
+          EVENT_UPDATE: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${EventUpdatedTopicName}
+          FAILED_EVENT_CREATE: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${FailedEventCreateTopicName}
+          # INVALID_WINMAIL_EVENT: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${InvalidWinmailRequestTopicName}
+          NEW_EVENT_REQUEST: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${NewEventRequestTopicName}
+          SQS_URL: !Sub https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${GetNewEventRequestFromEmailQueueName}
+
+  GetNewEventRequestFromEmailFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatch
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "sqs:DeleteMessage"
+                  - "sqs:ReceiveMessage"
+                  - "sqs:GetQueueAttributes"
+                Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${GetNewEventRequestFromEmailQueueName}
+              - Effect: Allow
+                Action: "s3:GetObject"
+                Resource: !Sub "arn:aws:s3:::${S3BucketName}/${S3Prefix}/*"
+              - Effect: Allow
+                Action:
+                  - "sns:Publish"
+                  - "sns:Subscribe"
+                Resource:
+                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${EventCancelledTopicName}
+                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${EventUpdatedTopicName}
+                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${FailedEventCreateTopicName}
+                  # - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${InvalidWinmailRequestTopicName}
+                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${NewEventRequestTopicName}
+
+  GetNewEventRequestFromEmailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetNewEventRequestFromEmailFunction}"
+      RetentionInDays: !If
+        - LogRetentionIsSet
+        - !Ref LogRetentionDays
+        - !Ref AWS::NoValue
+
+Outputs:
+  #####################################
+  # GetNewEventRequestFromEmailFunction #
+  #####################################
+
+  GetNewEventRequestFromEmailFunction:
+    Description: GetNewEventRequestFromEmail Lambda Function ARN
+    Value: !GetAtt GetNewEventRequestFromEmailFunction.Arn
+
+  GetNewEventRequestFromEmailFunctionRole:
+    Description: IAM Role for the GetNewEventRequestFromEmail function
+    Value: !GetAtt GetNewEventRequestFromEmailFunctionRole.Arn
+
+  GetNewEventRequestFromEmailLogGroup:
+    Description: Log Group for the GetNewEventRequestFromEmail function.
+    Value: !Ref GetNewEventRequestFromEmailLogGroup

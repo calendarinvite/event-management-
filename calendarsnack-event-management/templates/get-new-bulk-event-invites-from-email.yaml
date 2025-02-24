@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: get_new_bulk_event_invites_from_email
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: get-new-bulk-event-invites-from-email
+    Description: API application for the get_new_bulk_event_invites_from_email SAM app.
+    Author: 31events
+    # SpdxLicenseId: N/A
+    # LicenseUrl: LICENSE.txt
+    ReadmeUrl: ../README.md
+    # SemanticVersion is ignored by the SAM publisher CodeBuild
+    # instead version comes from the Git tag that triggers the CodeBuild.
+    SemanticVersion: 0.0.1
+
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W3002 # Because we're using Lambda Layers
+
+Parameters:
+  ############
+  # Required #
+  ############
+  DynamoDbTableName:
+    Type: String
+    Description: Name of DynamoDb table to write to/read from.
+
+  NewEventInviteTopicName:
+    Type: String
+    Description: Topic name of new event invite notification.
+
+  NewBulkEventInviteQueueName:
+    Type: String
+    Description: Queue name of new bulk event invite message.
+
+  S3BucketName:
+    Type: String
+    Description: S3 Bucket where incoming logs are stored.
+
+  S3Prefix:
+    Type: String
+    Description: Prefix in S3 Bucket where incoming logs are stored.
+
+  SystemEmail:
+    Type: String
+    Description: Name and email of system sender.
+
+  ############
+  # Optional #
+  ############
+  LogLevel:
+    Type: String
+    Description: Log level for lambda.
+    Default: WARNING
+
+  LogRetentionDays:
+    Type: String
+    Description: Number of days to retin logs before expiring them.
+    AllowedValues:
+      - "-1"
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+    Default: 180
+
+Conditions:
+  LogRetentionIsSet: !Not [!Equals [!Ref LogRetentionDays, "-1"]]
+
+Resources:
+  GetNewBulkEventInvitesFromEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/functions/get_new_bulk_event_invites_from_email/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      Role: !GetAtt GetNewBulkEventInvitesFromEmailFunctionRole.Arn
+      Timeout: 10 # TODO: Reduce this to 3s when this function can consistently achieve it.
+      MemorySize: 1024
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            BatchSize: 1
+            Enabled: True
+            Queue: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${NewBulkEventInviteQueueName}
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          REGION: !Ref AWS::Region
+          THIRTYONE_TABLE: !Ref DynamoDbTableName
+          NEW_EVENT_INVITE: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${NewEventInviteTopicName}
+          SYSTEM_EMAIL: !Ref SystemEmail
+
+  GetNewBulkEventInvitesFromEmailFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatch
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Sid: DynamoDbRead
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}/index/*
+              - Sid: S3Read
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:aws:s3:::${S3BucketName}/${S3Prefix}/*
+              - Sid: SesWrite
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendTemplatedEmail
+                  - ses:SendCustomVerificationEmail
+                  - ses:SendRawEmail
+                  - ses:SendBulkTemplatedEmail
+                Resource: "*"
+              - Sid: SnsWrite
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                  - sns:Subscribe
+                Resource: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${NewEventInviteTopicName}
+              - Sid: SqsWrite
+                Effect: Allow
+                Action:
+                  - sqs:DeleteMessage
+                  - sqs:ReceiveMessage
+                  - sqs:GetQueueAttributes
+                Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${NewBulkEventInviteQueueName}
+
+  GetNewBulkEventInvitesFromEmailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetNewBulkEventInvitesFromEmailFunction}"
+      RetentionInDays: !If
+        - LogRetentionIsSet
+        - !Ref LogRetentionDays
+        - !Ref AWS::NoValue
+
+Outputs:
+  ###########################################
+  # GetNewBulkEventInvitesFromEmailFunction #
+  ###########################################
+
+  GetNewBulkEventInvitesFromEmailFunction:
+    Description: GetNewBulkEventInvitesFromEmail Lambda Function ARN
+    Value: !GetAtt GetNewBulkEventInvitesFromEmailFunction.Arn
+
+  GetNewBulkEventInvitesFromEmailFunctionRole:
+    Description: IAM Role for the GetNewBulkEventInvitesFromEmail function
+    Value: !GetAtt GetNewBulkEventInvitesFromEmailFunctionRole.Arn
+
+  GetNewBulkEventInvitesFromEmailLogGroup:
+    Description: Log Group for the GetNewBulkEventInvitesFromEmail function.
+    Value: !Ref GetNewBulkEventInvitesFromEmailLogGroup

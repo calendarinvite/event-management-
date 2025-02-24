@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: send_event_invite
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: send-event-invite
+    Description: API application for the send_event_invite SAM app.
+    Author: 31events
+    # SpdxLicenseId: N/A
+    # LicenseUrl: LICENSE.txt
+    ReadmeUrl: ../README.md
+    # SemanticVersion is ignored by the SAM publisher CodeBuild
+    # instead version comes from the Git tag that triggers the CodeBuild.
+    SemanticVersion: 0.0.1
+
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W3002 # Because we're using Lambda Layers
+
+Parameters:
+  ############
+  # Required #
+  ############
+  DynamoDbTableName:
+    Type: String
+    Description: Name of DynamoDb table to write to/read from.
+
+  RsvpEmail:
+    Type: String
+    Description: Email to send responses to.
+
+  SendEventInviteSqsQueueName:
+    Type: String
+    Description: Send Event Invite queue name.
+
+  SystemEmail:
+    Type: String
+    Description: Name and email of system sender.
+
+  LayerVersionArn:
+    Type: String
+    Description: SharedLib Lambda Layer version ARN.
+
+  ############
+  # Optional #
+  ############
+  LogLevel:
+    Type: String
+    Description: Log level for lambda.
+    Default: WARNING
+
+  LogRetentionDays:
+    Type: String
+    Description: Number of days to retin logs before expiring them.
+    AllowedValues:
+      - "-1"
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+    Default: 180
+
+Conditions:
+  LogRetentionIsSet: !Not [!Equals [!Ref LogRetentionDays, "-1"]]
+
+Resources:
+  SendEventInviteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/functions/send_event_invite/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      Role: !GetAtt SendEventInviteFunctionRole.Arn
+      Timeout: 300 # TODO: Reduce this to 3s when this function can consistently achieve it.
+      MemorySize: 1024
+      Layers:
+        - !Ref LayerVersionArn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            BatchSize: 1
+            Enabled: True
+            Queue: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SendEventInviteSqsQueueName}
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          REGION: !Ref AWS::Region
+          DYNAMODB_TABLE: !Ref DynamoDbTableName
+          RSVP_EMAIL: !Ref RsvpEmail
+          SENDER: !Ref SystemEmail
+          SQS_URL: !Sub https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${SendEventInviteSqsQueueName}
+
+  SendEventInviteFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatch
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Sid: DynamoDbWrite
+                Effect: Allow
+                Action:
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}
+              - Sid: DynamoDbRead
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableName}/index/*
+              - Sid: Ses
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendTemplatedEmail
+                  - ses:SendCustomVerificationEmail
+                  - ses:SendRawEmail
+                  - ses:SendBulkTemplatedEmail
+                Resource: "*"
+              - Sid: SqsWrite
+                Effect: Allow
+                Action:
+                  - sqs:DeleteMessage
+                  - sqs:ReceiveMessage
+                  - sqs:GetQueueAttributes
+                Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SendEventInviteSqsQueueName}
+
+  SendEventInviteLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SendEventInviteFunction}"
+      RetentionInDays: !If
+        - LogRetentionIsSet
+        - !Ref LogRetentionDays
+        - !Ref AWS::NoValue
+
+Outputs:
+  ###############################
+  # SendEventInviteFunction #
+  ###############################
+
+  SendEventInviteFunction:
+    Description: SendEventInvite Lambda Function ARN
+    Value: !GetAtt SendEventInviteFunction.Arn
+
+  SendEventInviteFunctionRole:
+    Description: IAM Role for the SendEventInvite function
+    Value: !GetAtt SendEventInviteFunctionRole.Arn
+
+  SendEventInviteLogGroup:
+    Description: Log Group for the SendEventInvite function.
+    Value: !Ref SendEventInviteLogGroup

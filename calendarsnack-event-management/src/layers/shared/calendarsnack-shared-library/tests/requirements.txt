@@ -1,0 +1,6 @@
+-r ../src/requirements.txt
+freezegun
+moto[all]
+pytest
+pytest-cov
+pytest-mock

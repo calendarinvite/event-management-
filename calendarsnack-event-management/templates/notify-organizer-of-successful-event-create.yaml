@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: notify_organizer_of_successful_event_create
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: notify-organizer-of-successful-event-create
+    Description: API application for the notify_organizer_of_successful_event_create SAM app.
+    Author: 31events
+    # SpdxLicenseId: N/A
+    # LicenseUrl: LICENSE.txt
+    ReadmeUrl: ../README.md
+    # SemanticVersion is ignored by the SAM publisher CodeBuild
+    # instead version comes from the Git tag that triggers the CodeBuild.
+    SemanticVersion: 0.0.1
+
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W3002 # Because we're using Lambda Layers
+
+Parameters:
+  ############
+  # Required #
+  ############
+  SuccessfulEventCreateSqsQueueName:
+    Type: String
+    Description: Successful Event Create queue name.
+
+  CodeCommitRepoName:
+    Type: String
+    Description: >
+      CodeCommit repo containing Successful Event Create Notification
+      email template. If not using CodeCommit, provide S3 bucket with 's3://' prefix.
+
+  SuccessfulEventCreateNotificationEmailTemplateName:
+    Type: String
+    Description: Filename of Successful Event Create Notification email template.
+
+  SuccessfulEventCreatePaidNotificationEmailTemplateName:
+    Type: String
+    Description: Filename of Successful Event Create Paid Notification email template.
+
+  EmailSender:
+    Type: String
+    Description: Name and email of sender.
+
+  EmailSubject:
+    Type: String
+    Description: Subject of email.
+
+  LayerVersionArn:
+    Type: String
+    Description: SharedLib Lambda Layer version ARN.
+
+  ############
+  # Optional #
+  ############
+  LogLevel:
+    Type: String
+    Description: Log level for lambda.
+    Default: WARNING
+
+  LogRetentionDays:
+    Type: String
+    Description: Number of days to retin logs before expiring them.
+    AllowedValues:
+      - "-1"
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+    Default: 180
+
+Conditions:
+  LogRetentionIsSet: !Not [!Equals [!Ref LogRetentionDays, "-1"]]
+
+Resources:
+  NotifyOrganizerOfSuccessfulEventCreateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/functions/notify_organizer_of_successful_event_create/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      Role: !GetAtt NotifyOrganizerOfSuccessfulEventCreateFunctionRole.Arn
+      Timeout: 10 # TODO: Reduce this to 3s when this function can consistently achieve it.
+      MemorySize: 1024
+      Layers:
+        - !Ref LayerVersionArn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            BatchSize: 1
+            Enabled: True
+            Queue: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SuccessfulEventCreateSqsQueueName}
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          REGION: !Ref AWS::Region
+          CODECOMMIT_REPO: !Ref CodeCommitRepoName
+          NEW_EVENT_NOTIFICATION_EMAIL: !Ref SuccessfulEventCreateNotificationEmailTemplateName
+          NEW_PAID_EVENT_NOTIFICATION_EMAIL: !Ref SuccessfulEventCreatePaidNotificationEmailTemplateName
+          SENDER: !Ref EmailSender
+          SQS_URL: !Sub https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${SuccessfulEventCreateSqsQueueName}
+          SUBJECT: !Ref EmailSubject
+
+  NotifyOrganizerOfSuccessfulEventCreateFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatch
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Sid: CodeCommit
+                Effect: Allow
+                Action: codecommit:GetFile
+                Resource: !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepoName}
+              - Sid: Ses
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendTemplatedEmail
+                  - ses:SendCustomVerificationEmail
+                  - ses:SendRawEmail
+                  - ses:SendBulkTemplatedEmail
+                Resource: "*"
+              - Sid: Sqs
+                Effect: Allow
+                Action:
+                  - sqs:DeleteMessage
+                  - sqs:ReceiveMessage
+                  - sqs:GetQueueAttributes
+                Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SuccessfulEventCreateSqsQueueName}
+
+  NotifyOrganizerOfSuccessfulEventCreateFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NotifyOrganizerOfSuccessfulEventCreateFunction}"
+      RetentionInDays: !If
+        - LogRetentionIsSet
+        - !Ref LogRetentionDays
+        - !Ref AWS::NoValue
+
+Outputs:
+  ######################################################
+  # NotifyOrganizerOfSuccessfulEventCreateFunction #
+  ######################################################
+
+  NotifyOrganizerOfSuccessfulEventCreateFunction:
+    Description: NotifyOrganizerOfSuccessfulEventCreateFunction Lambda Function ARN
+    Value: !GetAtt NotifyOrganizerOfSuccessfulEventCreateFunction.Arn
+
+  NotifyOrganizerOfSuccessfulEventCreateFunctionRole:
+    Description: IAM Role for the NotifyOrganizerOfSuccessfulEventCreateFunction function
+    Value: !GetAtt NotifyOrganizerOfSuccessfulEventCreateFunctionRole.Arn
+
+  NotifyOrganizerOfSuccessfulEventCreateLogGroup:
+    Description: Log Group for the NotifyOrganizerOfSuccessfulEventCreateFunction function.
+    Value: !Ref NotifyOrganizerOfSuccessfulEventCreateFunctionLogGroup
